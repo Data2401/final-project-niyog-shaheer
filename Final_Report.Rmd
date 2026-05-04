@@ -1,0 +1,379 @@
+---
+title: "Airline Route Profitability Analysis"
+author: "Niyog Uprety & Shaheer Ahmed"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center")
+options(scipen = 999)
+```
+
+```{r packages}
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+# Introduction
+
+Airlines have very high operating costs. Every flight has expenses like fuel, crew, maintenance, and airport fees before a single ticket is sold. Because of that, figuring out what makes a flight profitable is really important.
+
+This project looks at a simulated dataset of one year of flights for a major airline based in Dubai (DXB). Dubai connects short regional routes and long international ones, which makes it a good case for studying how different types of routes affect profitability.
+
+Our main question is: **what factors are most strongly linked to whether a flight makes money?** We look at route category, season, demand level, and load factor to see which ones matter the most.
+
+---
+
+# Data and Methods
+
+## Data Source
+
+The data comes from the **Airline Route Profitability Dataset** on Kaggle, created by Muhammad Waleed.
+
+> [Airline Route Profitability Dataset](https://www.kaggle.com/datasets/waleedfaheem/airline-route-profitability-and-cost-analysis)
+
+Each row is one flight. The dataset includes route type, season, demand level, aircraft type, how full the plane was, revenue, costs, and profit.
+
+The airline flies three types of routes:
+
+- **Short Haul (1 to 3.5 hrs):** Doha (DOH), Muscat (MCT), Kuwait City (KWI), Bahrain (BAH), Riyadh (RUH), Jeddah (JED), Cairo (CAI), Amman (AMM)
+- **Medium Haul (2.5 to 7 hrs):** Mumbai (BOM), Delhi (DEL), Istanbul (IST), London (LHR), Bangalore (BLR), Hyderabad (HYD), Chennai (MAA), Karachi (KHI), Lahore (LHE), Colombo (CMB)
+- **Long Haul (6.5 to 16.5 hrs):** New York (JFK), Sydney (SYD), Melbourne (MEL), Singapore (SIN), Hong Kong (HKG), Bangkok (BKK), Kuala Lumpur (KUL), Paris (CDG), Frankfurt (FRA), Los Angeles (LAX), San Francisco (SFO), Chicago (ORD)
+
+## Loading the Data
+
+```{r load-data}
+airline_data <- read_csv("airline_route_profitability.csv")
+```
+
+## Checking for Missing Values
+
+Before cleaning, we wanted to see how much data was actually missing.
+
+```{r missing-check}
+total_missing <- sum(is.na(airline_data))
+missing_pct <- round(total_missing / (nrow(airline_data) * ncol(airline_data)) * 100, 2)
+```
+
+Out of all the values in the dataset, **`r missing_pct`%** were missing. That is very small, so we decided to just drop those rows rather than try to fill them in.
+
+```{r missing-by-col}
+missing_by_col <- colSums(is.na(airline_data))
+missing_by_col <- missing_by_col[missing_by_col > 0]
+
+kable(data.frame(Variable = names(missing_by_col),
+                 Missing_Count = as.numeric(missing_by_col)),
+      caption = "Variables with missing values before cleaning") %>%
+  kable_styling()
+```
+
+## Data Cleaning
+
+We parsed the flight date using `ymd()`, set the season order so plots display from best to worst, and then dropped any rows that had missing values.
+
+```{r clean-data}
+airline_clean <- airline_data %>%
+  mutate(Flight_Date = ymd(Flight_Date)) %>%
+  mutate(Season = factor(Season, levels = c("Peak", "Shoulder", "Normal", "Low")))
+
+airline_clean <- na.omit(airline_clean)
+```
+
+After cleaning, the dataset has **`r nrow(airline_clean)`** flights and **`r ncol(airline_clean)`** variables.
+
+## Key Variables
+
+```{r key-vars-table}
+key_vars <- data.frame(
+  Variable = c("Profit", "Profit_Margin", "Load_Factor",
+               "Route_Category", "Season", "Demand_Level"),
+  Description = c(
+    "Revenue minus total costs for a single flight",
+    "Profit as a share of total revenue in percent. We use this as our measure of efficiency.",
+    "Share of seats that were filled on the flight",
+    "Short haul, medium haul, or long haul",
+    "Season label assigned to the flight",
+    "Demand category assigned to the flight"
+  )
+)
+
+kable(key_vars, caption = "Key variables used in this analysis") %>%
+  kable_styling()
+```
+
+## Season Definitions
+
+After checking the actual data, the season labels match these months:
+
+- **Peak:** December through February
+- **Shoulder:** March, April, October, November
+- **Normal:** May and September
+- **Low:** June through August
+
+One thing that stood out is that Peak season is in winter, not summer. For a Dubai hub that makes sense because international travel demand peaks during the holiday season. We will confirm whether Peak actually does perform best in the data.
+
+---
+
+# Exploratory Data Analysis
+
+## Overall Profit Distribution
+
+To start, we just wanted to get a sense of what profit looks like across all flights.
+
+```{r profit-hist, fig.cap="Distribution of profit across all flights. The distribution is right skewed, with most flights earning a small profit close to zero and a long tail of high-earning flights stretching to the right. Some flights also operated at a loss."}
+ggplot(airline_clean, aes(x = Profit)) +
+  geom_histogram(binwidth = 50000, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution of Profit Across All Flights",
+    x = "Profit (USD)",
+    y = "Number of Flights"
+  ) +
+  theme_bw()
+```
+
+Profit is right skewed. The peak of the distribution sits close to zero, meaning most flights earn very little. There is a long tail to the right where a smaller number of flights earn very high profits, and there is also a visible left tail of flights that lost money. This tells us right away that not every flight is profitable, and it is worth figuring out what separates the ones that make money from the ones that do not.
+
+---
+
+# Research Questions
+
+## Does route category affect profitability?
+
+We expected long haul flights to earn more raw profit because ticket prices are higher over longer distances. But we also wanted to check profit margin, which is a better measure of efficiency since it accounts for the fact that longer routes cost more to operate too.
+
+```{r route-table}
+route_summary <- airline_clean %>%
+  group_by(Route_Category) %>%
+  summarize(
+    Flights          = n(),
+    Avg_Profit       = round(mean(Profit, na.rm = TRUE), 0),
+    Median_Profit    = round(median(Profit, na.rm = TRUE), 0),
+    Avg_Margin_Pct   = round(mean(Profit_Margin, na.rm = TRUE), 2)
+  ) %>%
+  arrange(desc(Avg_Profit))
+
+kable(route_summary,
+      col.names = c("Route Category", "Flights", "Avg Profit (USD)",
+                    "Median Profit (USD)", "Avg Margin (%)"),
+      caption = "Profit and margin by route category") %>%
+  kable_styling()
+```
+
+```{r route-profit-box, fig.cap="Profit by route category. Long haul earns the most on average, but short haul has many flights that lost money. The red dashed line marks the break-even point."}
+ggplot(airline_clean, aes(x = Route_Category, y = Profit)) +
+  geom_boxplot(fill = "steelblue") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Profit by Route Category",
+    x = "Route Category",
+    y = "Profit (USD)"
+  ) +
+  theme_bw()
+```
+
+Long haul routes have the highest average profit. Short haul routes have many flights sitting below the break-even line, which makes sense since fixed costs like crew and airport fees are harder to recover on a short trip.
+
+```{r route-margin-box, fig.cap="Profit margin by route category. When we compare efficiency instead of raw dollars, the gap between route types gets noticeably smaller."}
+ggplot(airline_clean, aes(x = Route_Category, y = Profit_Margin)) +
+  geom_boxplot(fill = "coral") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Profit Margin by Route Category",
+    x = "Route Category",
+    y = "Profit Margin (%)"
+  ) +
+  theme_bw()
+```
+
+When we switch to margin, long haul is still ahead but by less than we expected. Medium haul routes are actually pretty competitive in efficiency. Short haul still shows the most downside risk.
+
+## Does season affect profitability? Is Peak actually the peak?
+
+We wanted to verify whether Peak season really does perform best, since the professor raised this question during our presentation.
+
+```{r season-table}
+season_summary <- airline_clean %>%
+  group_by(Season) %>%
+  summarize(
+    Flights          = n(),
+    Avg_Profit       = round(mean(Profit, na.rm = TRUE), 0),
+    Avg_Margin_Pct   = round(mean(Profit_Margin, na.rm = TRUE), 2)
+  )
+
+kable(season_summary,
+      col.names = c("Season", "Flights", "Avg Profit (USD)", "Avg Margin (%)"),
+      caption = "Profit and margin by season, ordered from Peak to Low") %>%
+  kable_styling()
+```
+
+Yes, Peak season really is the best. Average profit and margin both follow the order Peak > Shoulder > Normal > Low, exactly as expected.
+
+```{r season-profit-box, fig.cap="Profit by season from Peak to Low. Peak season clearly outperforms the rest and Low season has the most losses below the red line."}
+ggplot(airline_clean, aes(x = Season, y = Profit)) +
+  geom_boxplot(fill = "mediumpurple") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Profit by Season",
+    x = "Season",
+    y = "Profit (USD)"
+  ) +
+  theme_minimal()
+```
+
+Peak season flights have the highest median profit and the fewest losses. Low season flights sit much lower and have many more observations below zero.
+
+```{r season-margin-box, fig.cap="Profit margin by season. Low season not only has lower margins on average but also a much wider spread, making it the most unpredictable time to operate."}
+ggplot(airline_clean, aes(x = Season, y = Profit_Margin)) +
+  geom_boxplot(fill = "mediumpurple") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Profit Margin by Season",
+    x = "Season",
+    y = "Profit Margin (%)"
+  ) +
+  theme_minimal()
+```
+
+Season clearly affects how efficient flights are too. Low season has a much wider spread in margins, which means outcomes are a lot harder to predict during that time.
+
+## Does demand level affect profitability?
+
+```{r demand-table}
+demand_summary <- airline_clean %>%
+  group_by(Demand_Level) %>%
+  summarize(
+    Flights              = n(),
+    Avg_Profit           = round(mean(Profit, na.rm = TRUE), 0),
+    Median_Profit        = round(median(Profit, na.rm = TRUE), 0),
+    Avg_Margin_Pct       = round(mean(Profit_Margin, na.rm = TRUE), 2),
+    Median_Margin_Pct    = round(median(Profit_Margin, na.rm = TRUE), 2)
+  ) %>%
+  arrange(desc(Avg_Profit))
+
+kable(demand_summary,
+      col.names = c("Demand Level", "Flights", "Avg Profit (USD)",
+                    "Median Profit (USD)", "Avg Margin (%)", "Median Margin (%)"),
+      caption = "Profit and margin by demand level") %>%
+  kable_styling()
+```
+
+```{r demand-profit-box, fig.cap="Profit by demand level. High demand flights are much more consistently profitable, with far fewer losses than medium demand flights."}
+ggplot(airline_clean, aes(x = Demand_Level, y = Profit)) +
+  geom_boxplot(fill = "seagreen") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Profit by Demand Level",
+    x = "Demand Level",
+    y = "Profit (USD)"
+  ) +
+  theme_classic()
+```
+
+High demand flights have a much higher median profit and far fewer losses compared to medium demand flights.
+
+```{r demand-margin-box, fig.cap="Profit margin by demand level. High demand flights are more efficient too, not just bigger in raw dollars."}
+ggplot(airline_clean, aes(x = Demand_Level, y = Profit_Margin)) +
+  geom_boxplot(fill = "seagreen") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Profit Margin by Demand Level",
+    x = "Demand Level",
+    y = "Profit Margin (%)"
+  ) +
+  theme_classic()
+```
+
+This turned out to be the clearest pattern in the entire dataset. Demand level separates flights more cleanly than any other variable we looked at. More passengers means more revenue spread across the same fixed costs.
+
+## Do fuller flights earn more profit?
+
+Load factor measures what share of the seats were filled. We expected fuller flights to be more profitable, but it turned out the relationship is not that simple.
+
+```{r load-heatmap, fig.cap="Heatmap of load factor versus profit. Each tile shows how many flights fall in that region. Even at very high load factors there are still many unprofitable flights, which shows that seat occupancy alone is not enough."}
+ggplot(airline_clean, aes(x = Load_Factor, y = Profit)) +
+  geom_bin2d() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Load Factor vs. Profit",
+    subtitle = "Red dashed line marks break-even profit",
+    x = "Load Factor (share of seats filled)",
+    y = "Profit (USD)"
+  ) +
+  theme_minimal()
+```
+
+The heatmap shows that most flights have high load factors, but there is still a big vertical spread in profit at any given occupancy level. A flight can be nearly full and still lose money if fuel costs or other operating expenses are too high for that route.
+
+## Which season and route combination is most profitable?
+
+```{r combo-table}
+combo_summary <- airline_clean %>%
+  group_by(Season, Route_Category) %>%
+  summarize(
+    Flights          = n(),
+    Avg_Profit       = round(mean(Profit, na.rm = TRUE), 0),
+    Avg_Margin_Pct   = round(mean(Profit_Margin, na.rm = TRUE), 2)
+  ) %>%
+  arrange(desc(Avg_Profit))
+
+kable(combo_summary,
+      col.names = c("Season", "Route Category", "Flights",
+                    "Avg Profit (USD)", "Avg Margin (%)"),
+      caption = "Season and route combinations sorted from most to least profitable") %>%
+  kable_styling()
+```
+
+The best combination is Peak season with long haul routes. The worst is Low season with short haul routes. Short haul routes seem especially sensitive to season, which makes sense since their margins are thinner to begin with.
+
+## How does profit change month by month?
+
+```{r monthly-trend, fig.cap="Average monthly profit across the year. The winter months are clearly the strongest, and summer is the weakest, which lines up with the season definitions in the dataset."}
+monthly_profit <- airline_clean %>%
+  mutate(Month = floor_date(Flight_Date, unit = "month")) %>%
+  group_by(Month) %>%
+  summarize(Avg_Profit = mean(Profit, na.rm = TRUE))
+
+ggplot(monthly_profit, aes(x = Month, y = Avg_Profit)) +
+  geom_line(color = "steelblue", lwd = 1) +
+  geom_point(color = "navy", size = 2) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Average Monthly Profit Over the Year",
+    subtitle = "Red dashed line marks break-even profit",
+    x = "Month",
+    y = "Average Profit (USD)"
+  ) +
+  theme_minimal()
+```
+
+January and February are the strongest months. Profit falls through spring, bottoms out in summer, then recovers in November and December. This lines up cleanly with the season labels in the data.
+
+---
+
+# Limitations
+
+This is a simulated dataset so the numbers are modeled, not real operational data. The results give a reasonable picture of how these factors interact, but they should not be treated as exact truth. The dataset also only covers one airline operating out of one hub city, so these patterns might not apply to every airline or route network.
+
+---
+
+# Conclusion
+
+This project looked at what drives profitability for a simulated Dubai based airline over one year of flights.
+
+The main findings were:
+
+- Demand level had the strongest and most consistent effect. High demand flights made more money and were more efficient than medium demand flights across every route type and season.
+- Route category matters, but in different ways. Long haul earns the most in total, but short haul is the riskiest because fixed costs are harder to recover over shorter distances.
+- Season follows the expected order: Peak (December through February) really is the best and Low (summer) is the worst.
+- Load factor helps but does not guarantee profitability. Even nearly full flights can lose money if operating costs are too high.
+- The best combination is Peak season with long haul routes.
