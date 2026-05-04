@@ -16,6 +16,10 @@ options(scipen = 999)
 ```
 
 ```{r packages}
+# tidyverse: data manipulation and visualization (dplyr, ggplot2)
+# lubridate: handling and parsing date variables
+# knitr: formatting tables in the report
+# kableExtra: improving table styling for readability
 library(tidyverse)
 library(lubridate)
 library(knitr)
@@ -65,7 +69,7 @@ total_missing <- sum(is.na(airline_data))
 missing_pct <- round(total_missing / (nrow(airline_data) * ncol(airline_data)) * 100, 2)
 ```
 
-Out of all the values in the dataset, **`r missing_pct`%** were missing. That is very small, so we decided to just drop those rows rather than try to fill them in.
+Out of all the values in the dataset, **`r missing_pct`%** were missing. That is very small, so we decided to just drop those rows rather than try to fill them in. And since the percentage of missing values is very small, removing these rows is unlikely to bias the results or significantly reduce the dataset size.
 
 ```{r missing-by-col}
 missing_by_col <- colSums(is.na(airline_data))
@@ -90,6 +94,13 @@ airline_clean <- na.omit(airline_clean)
 ```
 
 After cleaning, the dataset has **`r nrow(airline_clean)`** flights and **`r ncol(airline_clean)`** variables.
+
+```{r clean-data-preview}
+kable(head(airline_clean, 10), caption = "Preview of cleaned dataset") %>%
+  kable_styling()
+```
+
+This is the condensed form of the cleaned data.
 
 ## Key Variables
 
